@@ -3,11 +3,14 @@ package image
 import (
 	"bytes"
 	"compress/zlib"
-	crand "crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"hash/crc32"
+	"io"
 	"math"
+	"math/rand"
 	"os"
+	"reflect"
 )
 
 func concatenateSlices[T any](slices ...[]T) []T {
@@ -43,6 +46,7 @@ func NewImage(text []byte) *Image {
 	extraBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(extraBytes, uint32(image.extraBytes))
 	image.makeText([]byte("xtra"), extraBytes)
+	image.makeText([]byte("Software"), []byte("github.com/tofl/PNG-encode-decode"))
 
 	image.makeIdat()
 
@@ -65,7 +69,16 @@ func (i *Image) makeIhdr() {
 	i.extraBytes = deltaBytes
 
 	randomBytes := make([]byte, deltaBytes)
-	_, _ = crand.Read(randomBytes)
+
+	for i := 0; i < len(randomBytes); i++ {
+		randNumber := rand.Intn(25) + 65
+
+		if rand.Intn(2) == 1 {
+			randNumber += 32
+		}
+
+		randomBytes[i] = byte(randNumber)
+	}
 	i.text = concatenateSlices(i.text, randomBytes)
 
 	/*
@@ -186,4 +199,122 @@ func (i *Image) MakeImage() {
 	if err != nil {
 		panic("Couldn't create the output file.")
 	}
+}
+
+// Get the tEXT chunks of the png file
+func extractTEXT(chunks [][]byte) map[string][]byte {
+	texts := make(map[string][]byte)
+
+	for _, text := range chunks {
+		var key, value []byte
+		target := &key
+
+		for _, v := range text {
+			if target == &key && v == 0x00 {
+				target = &value
+				continue
+			}
+			*target = append(*target, v)
+		}
+
+		texts[string(key)] = value
+	}
+
+	return texts
+}
+
+func decompressIDAT(chunk []byte) []byte {
+	b := bytes.NewReader(chunk)
+
+	reader, err := zlib.NewReader(b)
+	if err != nil {
+		fmt.Println("Error while analyzing the image")
+		os.Exit(1)
+	}
+
+	decompressedData, err := io.ReadAll(reader)
+	if err != nil {
+		fmt.Println("Error while analyzing the image")
+		os.Exit(1)
+	}
+
+	_ = reader.Close()
+
+	return decompressedData
+}
+
+func Decode(f *os.File) string {
+	var tEXT [][]byte
+	var IDAT []byte
+
+	expectedSignature := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	signature := make([]byte, 8)
+	offset, err := f.Read(signature)
+
+	if !reflect.DeepEqual(signature, expectedSignature) || err != nil {
+		fmt.Printf("The file '%s' could not be opened.\n", f.Name())
+		os.Exit(1)
+	}
+
+	// Retrieve the chunks
+	eof := false
+	chunkLength := make([]byte, 4)
+	chunkType := make([]byte, 4)
+
+	for eof == false {
+		// Read the length part
+		bytesRead, err := f.ReadAt(chunkLength, int64(offset))
+		if err == io.EOF {
+			eof = true
+		}
+
+		l := binary.BigEndian.Uint32(chunkLength)
+		offset += bytesRead
+
+		// Read the type part
+		bytesRead, err = f.ReadAt(chunkType, int64(offset))
+		if err == io.EOF {
+			eof = true
+		}
+
+		if string(chunkType) == "IEND" {
+			eof = true
+		}
+
+		offset += bytesRead
+
+		// Read the data part
+		chunkData := make([]byte, l)
+		bytesRead, err = f.ReadAt(chunkData, int64(offset))
+
+		if string(chunkType) == "tEXT" {
+			tEXT = append(tEXT, chunkData)
+		} else if string(chunkType) == "IDAT" {
+			IDAT = append(IDAT, chunkData...)
+		}
+
+		if err == io.EOF {
+			eof = true
+		}
+
+		offset += bytesRead
+
+		// Skip the CRC part (at least for now)
+		offset += 4
+	}
+
+	// Handle IDAT and tEXT chunks
+	texts := extractTEXT(tEXT)
+	xtra := int(binary.BigEndian.Uint32(texts["xtra"]))
+
+	var cleansedData []byte
+	data := decompressIDAT(IDAT)
+
+	for i := 0; i < len(data); i++ {
+		if data[i] != 0 {
+			cleansedData = append(cleansedData, data[i])
+		}
+	}
+
+	return string(cleansedData[0 : len(cleansedData)-xtra])
 }
