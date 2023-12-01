@@ -45,8 +45,8 @@ func NewImage(text []byte) *Image {
 
 	extraBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(extraBytes, uint32(image.extraBytes))
-	image.makeText([]byte("xtra"), extraBytes)
-	image.makeText([]byte("Software"), []byte("github.com/tofl/PNG-encode-decode"))
+	image.MakeText([]byte("xtra"), extraBytes)
+	image.MakeText([]byte("Software"), []byte("github.com/tofl/PNG-encode-decode"))
 
 	image.makeIdat()
 
@@ -119,7 +119,7 @@ func (i *Image) makeIhdr() {
 	i.chunkIhdr = concatenateSlices(full, ihdrCRCByte)
 }
 
-func (i *Image) makeText(textName, text []byte) {
+func (i *Image) MakeText(textName, text []byte) {
 	textType := []byte{0x74, 0x45, 0x58, 0x54}
 
 	textData := concatenateSlices(textName, []byte{0x00}, text)
@@ -136,7 +136,6 @@ func (i *Image) makeText(textName, text []byte) {
 }
 
 func (i *Image) makeIdat() {
-
 	var scanlines []byte
 	for el := 0; el < len(i.text); {
 		scanlines = append(scanlines, 0x00)
@@ -243,7 +242,8 @@ func decompressIDAT(chunk []byte) []byte {
 	return decompressedData
 }
 
-func Decode(f *os.File) string {
+func Decode(f *os.File) (string, string) {
+	IHDR := make([]byte, 13)
 	var tEXT [][]byte
 	var IDAT []byte
 
@@ -287,7 +287,9 @@ func Decode(f *os.File) string {
 		chunkData := make([]byte, l)
 		bytesRead, err = f.ReadAt(chunkData, int64(offset))
 
-		if string(chunkType) == "tEXT" {
+		if string(chunkType) == "IHDR" {
+			copy(IHDR, chunkData)
+		} else if string(chunkType) == "tEXT" {
 			tEXT = append(tEXT, chunkData)
 		} else if string(chunkType) == "IDAT" {
 			IDAT = append(IDAT, chunkData...)
@@ -310,11 +312,19 @@ func Decode(f *os.File) string {
 	var cleansedData []byte
 	data := decompressIDAT(IDAT)
 
+	pxPerLine := int(binary.BigEndian.Uint32(IHDR[0:4]))
+	nBytesAdded := pxPerLine * 3
+
 	for i := 0; i < len(data); i++ {
-		if data[i] != 0 {
+		if nBytesAdded != pxPerLine*3 {
 			cleansedData = append(cleansedData, data[i])
+			nBytesAdded += 1
+		} else {
+			nBytesAdded = 0
 		}
 	}
 
-	return string(cleansedData[0 : len(cleansedData)-xtra])
+	fileName, _ := texts["filename"]
+
+	return string(cleansedData[0 : len(cleansedData)-xtra]), string(fileName)
 }
