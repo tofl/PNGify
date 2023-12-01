@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/tofl/PNG-encode-decode/image"
+	"github.com/tofl/pngify/image"
 	"os"
 	"time"
 )
